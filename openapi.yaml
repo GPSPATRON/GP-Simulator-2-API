@@ -1,0 +1,1246 @@
+openapi: 3.0.3
+info:
+  title: GP-Simulator-2 Local API
+  version: 1.0.0
+  contact:
+    name: GP-Simulator-2 API Documentation
+  description: |
+    Local HTTP API for controlling **GP-Simulator-2** SDR channels: discover channels,
+    configure simulation settings, start or stop signal generation, apply LLA shifts,
+    and read generation logs.
+
+    ## API server setup (GP-Simulator-2 application)
+
+    Configure the API in the desktop application before sending any requests:
+
+    1. **Run GP-Simulator-2 as administrator.** The local API server requires elevated
+       privileges to start and accept connections reliably.
+    2. Open the left sidebar and select **API**.
+    3. In **API SERVER SETTINGS**, enable **Enable API Server**.
+    4. Set **Port** - the TCP port the HTTP server listens on (default `5000`). Choose a
+       port that is not blocked by the firewall and not already in use by another
+       application. Use this port in API clients as `http://localhost:<port>`.
+    5. Set **Timeout, ms** - internal timeout for the local API server (default
+       `15000`). If clients receive `500` with
+       `No response data received within the timeout.`, increase this value in the
+       application and click **APPLY**.
+    6. Optional: enable **Allow Remote Access** to accept connections from other machines
+       on the network. This also requires administrator privileges to register the port
+       and add a firewall exception.
+    7. Choose **Authorization** mode:
+       - **No Auth** - requests work without the `GP-Simulator-2-API-Key` header.
+       - **API key** - copy the key from this screen (or click **GENERATE** for a new
+         one) and send it in every request header.
+    8. Click **APPLY** to save changes.
+
+    All paths in this specification are relative to `http://localhost:<port>`.
+
+    ## Quick start
+
+    1. Complete the **API server setup** steps above.
+    2. Call `GET /gp-simulator-2/api/v1/sdrs` to list channels and read each `genAlias`.
+    3. Use that alias as `{sdr_alias}` in channel-specific endpoints.
+    4. If **API key** authorization is enabled, add the header
+       `GP-Simulator-2-API-Key: <your-key>` to every request.
+
+    ## Authentication
+
+    Authorization is configured in the GP-Simulator-2 **API** settings screen:
+
+    | Mode in application | Client behavior |
+    | --- | --- |
+    | **No Auth** | Do not send `GP-Simulator-2-API-Key`. Requests should work without it. |
+    | **API key** | Send `GP-Simulator-2-API-Key: <key>` on every request. Missing key -> `401`. Invalid key -> `403`. |
+
+    The key is shown on the API settings page. Generate a new key with **GENERATE** if
+    needed, then click **APPLY**.
+
+    ## Response formats
+
+    | Pattern | Used by |
+    | --- | --- |
+    | `{ "status": "ok", "data": ... }` | List and detail endpoints |
+    | `{ "status": "ok", "message": "..." }` | Commands (`start`, `stop`, `settings`, `lla_shift`) |
+    | `{ "status": "Error", "message": "..." }` | Error responses |
+    | `[ { "action", "channel", "info", "timestamp" }, ... ]` | `GET /logs/gen` only |
+
+    Channel aliases use `C-A` in URLs (for example `GPS L1 C-A - Spoofing`). Response
+    messages sometimes use `C/A` instead.
+
+    ## Common error responses
+
+    | HTTP | When |
+    | --- | --- |
+    | 401 | `GP-Simulator-2-API-Key` header is missing |
+    | 403 | API key is invalid |
+    | 404 | Wrong API path (for example `/sdr` instead of `/sdrs`) |
+    | 404 | Unknown `{sdr_alias}` on a channel endpoint |
+    | 500 | Internal failure or request timeout |
+
+servers:
+  - url: http://localhost:5000
+    description: |
+      Direct GP-Simulator-2 local API server. Default port from **API SERVER SETTINGS**
+      in the application. Change the port number if you configured a different value.
+  - url: http://localhost:{port}
+    description: |
+      Use this server entry when GP-Simulator-2 listens on a custom port. Set `{port}`
+      to the value from **Port** in API settings (for example `5001`).
+    variables:
+      port:
+        default: "5000"
+        description: TCP port from GP-Simulator-2 API settings.
+
+tags:
+  - name: SDR Channels
+    description: Discover available SDR channels and read channel details.
+  - name: Channel Simulation Settings
+    description: Read and update simulation, spoofing, timing, and position settings for a channel.
+  - name: Generation Control
+    description: Start and stop signal generation for a selected SDR channel.
+  - name: LLA Shift
+    description: Apply LLA position shift during active signal generation on the Spoofing channel.
+  - name: Logs
+    description: Read generation log entries from GP-Simulator-2.
+
+x-tagGroups:
+  - name: Channels
+    tags:
+      - SDR Channels
+      - Channel Simulation Settings
+  - name: Generation
+    tags:
+      - Generation Control
+      - LLA Shift
+  - name: Monitoring
+    tags:
+      - Logs
+
+security:
+  - ApiKeyAuth: []
+  - {}  # No authentication, when configured in GP-Simulator 2
+
+paths:
+  /gp-simulator-2/api/v1/sdrs:
+    get:
+      tags:
+        - SDR Channels
+      operationId: listSdrChannels
+      summary: List SDR channels
+      description: |
+        Returns all SDR channels configured in GP-Simulator-2.
+
+        Use this endpoint first to get the exact `genAlias` value for each
+        channel. The returned alias is used as the `{sdr_alias}` path parameter
+        in the detail, settings, start, and stop endpoints.
+
+        If no channels are configured, the API returns `200 OK` with an empty
+        `data` array.
+
+        A `404` response means the request URL path is wrong, for example
+        `/gp-simulator-2/api/v1/sdr` instead of `/sdrs`.
+      responses:
+        "200":
+          description: List of SDR channels with connection and generation status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdrListResponse"
+              examples:
+                withChannels:
+                  summary: One Spoofing channel
+                  value:
+                    data:
+                      - connection: true
+                        genAlias: GPS L1 C-A - Spoofing
+                        genStatus: false
+                        gpsLockStatus: false
+                    status: ok
+                empty:
+                  summary: No channels configured
+                  value:
+                    data: []
+                    status: ok
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/EndpointNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/sdrs/{sdr_alias}:
+    get:
+      tags:
+        - SDR Channels
+      operationId: getSdrChannel
+      summary: Get SDR channel details
+      description: |
+        Returns detailed information for one SDR channel.
+
+        The `sdr_alias` value must match a channel alias returned by
+        `GET /gp-simulator-2/api/v1/sdrs`. Spaces and special characters can be
+        entered as plain text in most API tools; the tool will URL-encode them.
+
+        The API may use `C-A` in URLs and `C/A` in response messages.
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      responses:
+        "200":
+          description: SDR channel information and current channel settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SdrInfoResponse"
+              examples:
+                spoofingChannel:
+                  summary: Spoofing channel details
+                  value:
+                    data:
+                      genAlias: GPS L1 C/A - Spoofing
+                      sdrInfo:
+                        connection: true
+                        genStatus: false
+                        gpsLockStatus: false
+                      settings:
+                        curr_acceleration: 0
+                        curr_altitude: 0
+                        curr_gps_week: 0
+                        curr_latitude: 0
+                        curr_longitude: 1
+                        curr_speed: 0
+                        curr_time_of_week: 0
+                    status: ok
+                simulationChannel:
+                  summary: Simulation channel details
+                  value:
+                    data:
+                      genAlias: GPS L1 C/A - Simulation
+                      sdrInfo:
+                        connection: true
+                        genStatus: false
+                        gpsLockStatus: false
+                      settings:
+                        curr_acceleration: 0
+                        curr_altitude: 0
+                        curr_gps_week: 2425
+                        curr_latitude: 3.13239740894384e-19
+                        curr_longitude: -0.00508168905531414
+                        curr_speed: 0
+                        curr_time_of_week: 129849
+                    status: ok
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/sdrs/{sdr_alias}/settings:
+    get:
+      tags:
+        - Channel Simulation Settings
+      operationId: getSdrSettings
+      summary: Get channel simulation settings
+      description: |
+        Returns the current simulation and spoofing settings for one channel.
+
+        The response contains the same fields that can be updated with
+        `PUT /gp-simulator-2/api/v1/sdrs/{sdr_alias}/settings`.
+
+        Spoofing and Simulation channels return the
+        same settings fields and validation rules, except for channel-specific
+        restrictions on `spoofing type`.
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      responses:
+        "200":
+          description: Current channel simulation settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsResponse"
+              examples:
+                spoofingChannel:
+                  summary: Spoofing channel settings with NASA/USCG mode
+                  value:
+                    status: ok
+                    data:
+                      alm&eph_mode: NASA/USCG
+                      alm_path: ""
+                      eph_path: ""
+                      altitude: 100
+                      latitude: 48.8566
+                      longitude: 2.3522
+                      power: -31
+                      script_path: Test
+                      simulation_mode: Point
+                      spoofing type: Non-Coherent Spoofing
+                      sync_source: GPSDO
+                      time_mode: Current Time
+                      timestamp_ref: Local PC
+                simulationChannel:
+                  summary: Simulation channel settings
+                  value:
+                    status: ok
+                    data:
+                      alm&eph_mode: NASA/USCG
+                      alm_path: ""
+                      eph_path: ""
+                      altitude: 100
+                      latitude: 48.8566
+                      longitude: 2.3522
+                      power: -31
+                      script_path: Test
+                      simulation_mode: Point
+                      spoofing type: Non-Coherent Spoofing
+                      sync_source: Internal
+                      time_mode: Current Time
+                      timestamp_ref: NTP Server
+                spoofingChannelFileMode:
+                  summary: Spoofing channel settings with local file paths
+                  value:
+                    status: ok
+                    data:
+                      alm&eph_mode: File
+                      alm_path: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\176.al3'
+                      eph_path: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\brdc1800.26n'
+                      altitude: 100
+                      latitude: 48.8566
+                      longitude: 2.3522
+                      power: -31
+                      script_path: Test
+                      simulation_mode: Point
+                      spoofing type: Non-Coherent Spoofing
+                      sync_source: GPSDO
+                      time_mode: Current Time
+                      timestamp_ref: Local PC
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags:
+        - Channel Simulation Settings
+      operationId: updateSdrSettings
+      summary: Update channel simulation settings
+      description: |
+        Updates simulation, spoofing, timing, and position settings for one
+        channel.
+
+        Spoofing and Simulation channels accept the
+        same request body structure and return the same validation behavior,
+        except for channel-specific restrictions on `spoofing type`.
+
+        For the Simulation channel (`GPS L1 C-A - Simulation`), only
+        `Non-Coherent Spoofing` is accepted for `spoofing type`. Sending
+        `Coherent Spoofing` returns `400` with
+        `Incompatibility of configuration field values`.
+
+        Send the full settings object with all documented fields present:
+
+        - Missing field key -> `400` with `Missing required parameter: '<field_name>'`
+        - Invalid or empty enum -> `400` with `Invalid parameter value`
+        - `script_path`, `alm_path`, and `eph_path` accept empty strings
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      requestBody:
+        required: true
+        description: Full channel simulation settings object.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelSimulationSettings"
+            examples:
+              spoofingChannel:
+                summary: Spoofing channel with NASA/USCG almanac and ephemeris
+                value:
+                  alm&eph_mode: NASA/USCG
+                  alm_path: ""
+                  eph_path: ""
+                  altitude: 100
+                  latitude: 48.8566
+                  longitude: 2.3522
+                  power: -31
+                  script_path: Test
+                  simulation_mode: Point
+                  spoofing type: Non-Coherent Spoofing
+                  sync_source: GPSDO
+                  time_mode: Current Time
+                  timestamp_ref: Local PC
+              simulationChannel:
+                summary: Simulation channel configuration
+                value:
+                  alm&eph_mode: NASA/USCG
+                  alm_path: ""
+                  eph_path: ""
+                  altitude: 100
+                  latitude: 48.8566
+                  longitude: 2.3522
+                  power: -31
+                  script_path: Test
+                  simulation_mode: Point
+                  spoofing type: Non-Coherent Spoofing
+                  sync_source: Internal
+                  time_mode: Current Time
+                  timestamp_ref: NTP Server
+              spoofingChannelFileMode:
+                summary: Spoofing channel with local almanac and ephemeris files
+                value:
+                  alm&eph_mode: File
+                  alm_path: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\176.al3'
+                  eph_path: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\176.al3'
+                  altitude: 100
+                  latitude: 48.8566
+                  longitude: 2.3522
+                  power: -31
+                  script_path: Test
+                  simulation_mode: Point
+                  spoofing type: Non-Coherent Spoofing
+                  sync_source: GPSDO
+                  time_mode: Current Time
+                  timestamp_ref: Local PC
+      responses:
+        "200":
+          description: Channel settings were updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              examples:
+                updatedSpoofing:
+                  summary: Spoofing channel settings updated
+                  value:
+                    status: ok
+                    message: Updated settings for 'GPS L1 C/A - Spoofing'
+                updatedSimulation:
+                  summary: Simulation channel settings updated
+                  value:
+                    status: ok
+                    message: Updated settings for 'GPS L1 C/A - Simulation'
+        "400":
+          description: |
+            Request body is invalid.
+
+            - Missing field key: `Missing required parameter: '<field_name>'`
+            - Invalid or empty enum value: `Invalid parameter value`
+            - Out-of-range numeric value: `Updated field '<field_name>' for '<channel>'`
+            - Incompatible field combination:
+              `Incompatibility of configuration field values for '<channel>'`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missingRequiredParameter:
+                  summary: Required field key is missing from request body
+                  value:
+                    status: Error
+                    message: "Missing required parameter: 'script_path'"
+                invalidEnumValue:
+                  summary: Invalid or empty enum field
+                  value:
+                    status: Error
+                    message: Invalid parameter value
+                invalidPowerValue:
+                  summary: Power value outside the current allowed UI range
+                  value:
+                    status: Error
+                    message: "Updated field 'power' for 'GPS L1 C/A - Spoofing'"
+                invalidLatitudeValue:
+                  summary: Latitude value outside allowed range
+                  value:
+                    status: Error
+                    message: "Updated field 'latitude' for 'GPS L1 C/A - Spoofing'"
+                invalidLongitudeValue:
+                  summary: Longitude value outside allowed range
+                  value:
+                    status: Error
+                    message: "Updated field 'longitude' for 'GPS L1 C/A - Spoofing'"
+                invalidAltitudeValue:
+                  summary: Altitude value outside allowed range
+                  value:
+                    status: Error
+                    message: "Updated field 'altitude' for 'GPS L1 C/A - Spoofing'"
+                incompatibleSimulationSpoofingType:
+                  summary: Coherent Spoofing is not valid for Simulation channel
+                  value:
+                    status: Error
+                    message: "Incompatibility of configuration field values  for 'GPS L1 C/A - Simulation'"
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/sdrs/{sdr_alias}/start:
+    post:
+      tags:
+        - Generation Control
+      operationId: startGeneration
+      summary: Start signal generation
+      description: |
+        Starts signal generation for the selected SDR channel.
+
+        Request body is not required.
+
+        Before calling this endpoint, use
+        `GET /gp-simulator-2/api/v1/sdrs/{sdr_alias}/settings` to confirm the
+        channel has the expected coordinates, altitude, and power.
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      responses:
+        "200":
+          description: Signal generation was started successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              examples:
+                spoofingStarted:
+                  summary: Spoofing channel generation started
+                  value:
+                    status: ok
+                    message: Start signal generation for 'GPS L1 C/A - Spoofing'
+                simulationStarted:
+                  summary: Simulation channel generation started
+                  value:
+                    status: ok
+                    message: Start signal generation for 'GPS L1 C/A - Simulation'
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/sdrs/{sdr_alias}/stop:
+    post:
+      tags:
+        - Generation Control
+      operationId: stopGeneration
+      summary: Stop signal generation
+      description: |
+        Stops signal generation for the selected SDR channel.
+
+        Calling stop when generation is already stopped returns `400`.
+
+        Request body is not required. After stopping, confirm `genStatus` via
+        `GET /gp-simulator-2/api/v1/sdrs` or channel details.
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      responses:
+        "200":
+          description: Signal generation was stopped successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              examples:
+                spoofingStopped:
+                  summary: Spoofing channel generation stopped
+                  value:
+                    status: ok
+                    message: Stop signal generation for 'GPS L1 C/A - Spoofing'
+                simulationStopped:
+                  summary: Simulation channel generation stopped
+                  value:
+                    status: ok
+                    message: Stop signal generation for 'GPS L1 C/A - Simulation'
+        "400":
+          description: Signal generation is already stopped for the channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                spoofingAlreadyStopped:
+                  summary: Spoofing channel is already stopped
+                  value:
+                    status: Error
+                    message: "Signal generation already stopped for 'GPS L1 C/A - Spoofing'"
+                simulationAlreadyStopped:
+                  summary: Simulation channel is already stopped
+                  value:
+                    status: Error
+                    message: "Signal generation already stopped for 'GPS L1 C/A - Simulation'"
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/sdrs/{sdr_alias}/lla_shift:
+    post:
+      tags:
+        - LLA Shift
+      operationId: applyLlaShift
+      summary: Apply LLA position shift
+      description: |
+        Applies an LLA (latitude/longitude/altitude) position shift for the
+        **Spoofing** channel while signal generation is running.
+
+        **Prerequisites**
+
+        1. Set `{sdr_alias}` to the Spoofing channel (for example `GPS L1 C-A - Spoofing`).
+        2. Start generation with `POST .../start`.
+        3. Send the shift parameters in the request body.
+
+        **Validation**
+
+        - Simulation channel -> `400`
+        - Generation not running -> `400` with `Generating not started for '<channel>'`
+        - LLA shift already in progress -> `400` with `LLA shifting is not completed for '<channel>'`
+        - Missing field -> `400` with `Missing required parameter: '<field_name>'`
+        - Invalid `direction` -> `400` with `Invalid parameter value`
+      parameters:
+        - $ref: "#/components/parameters/SdrAlias"
+      requestBody:
+        required: true
+        description: LLA shift parameters for the active Spoofing channel.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LlaShiftRequest"
+            examples:
+              westShift:
+                summary: West shift example
+                value:
+                  offset_step: 200
+                  offset_time: 30
+                  direction: W
+              northShift:
+                summary: North shift example
+                value:
+                  offset_step: 89
+                  offset_time: 12
+                  direction: N
+      responses:
+        "200":
+          description: LLA shift command was accepted and applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              examples:
+                applied:
+                  summary: LLA shift applied to Spoofing channel
+                  value:
+                    status: ok
+                    message: LLA Shift for 'GPS L1 C/A - Spoofing'
+        "400":
+          description: |
+            Request is invalid, generation is not running, LLA shift is already
+            in progress, or the channel does not support LLA shift.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                generationNotStarted:
+                  summary: Generation must be started before LLA shift
+                  value:
+                    status: Error
+                    message: "Generating not started for 'GPS L1 C/A - Spoofing'"
+                llaShiftInProgress:
+                  summary: Previous LLA shift still running
+                  description: |
+                    Returned when generation is active, an LLA shift is already
+                    applied and still executing, and another `POST .../lla_shift`
+                    is sent before the current shift completes.
+                  value:
+                    status: Error
+                    message: "LLA shifting is not completed for 'GPS L1 C/A - Spoofing'"
+                missingRequiredParameter:
+                  summary: Required field key is missing from request body
+                  value:
+                    status: Error
+                    message: "Missing required parameter: 'direction'"
+                invalidDirection:
+                  summary: Empty or invalid direction value
+                  value:
+                    status: Error
+                    message: Invalid parameter value
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/SdrNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /gp-simulator-2/api/v1/logs/gen:
+    get:
+      tags:
+        - Logs
+      operationId: getGenerationLogs
+      summary: Get generation logs
+      description: |
+        Returns generation log entries recorded by GP-Simulator-2.
+
+        The response is a JSON array of log entries (not wrapped in `status` /
+        `data`).
+
+        `action` values:
+
+        - `Start Generation` - includes full simulation settings in `info`
+        - `Stop Generation` - `info` is usually an empty string
+        - `Update` - e.g. `DUT LLA shifted: ...` after LLA shift operations
+
+        Use this endpoint after starting or stopping generation to inspect what
+        happened in the simulator and troubleshoot generation issues.
+      responses:
+        "200":
+          description: Generation log entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerationLogResponse"
+              examples:
+                mixedEntries:
+                  summary: Start, stop, and LLA shift log entries
+                  value:
+                    - action: Start Generation
+                      channel: GPS L1 C/A - Simulation
+                      info: |-
+                        Simulation settings:
+                         Att: 0;
+                         Power: 0;
+                         System coordinate: WGS 84;
+                         Satt count: 12;
+                         Simulation mode: Point;
+                         Time simulation mode: Current;
+                         Time start UTC: 08:44:14;
+                         Duration of simulation:  22:00:30;
+                         Alm&Eph mode: NASA/USCG;
+                         Alm path: C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\179.al3;
+                         Ephemeris path: C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\144314_brdc1800.26n;
+                         Latitude: 0m;
+                         Longitude: 0m;
+                         Altitude: 0m;
+                         Spoofing type: Non-Coherent Spoofing;
+                         Start delay: 0.
+                      timestamp: "2026-06-29T11:44:14.000Z"
+                    - action: Stop Generation
+                      channel: GPS L1 C/A - Simulation
+                      info: ""
+                      timestamp: "2026-06-29T11:44:30.000Z"
+                    - action: Update
+                      channel: GPS L1 C/A - Simulation
+                      info: "DUT LLA shifted:  North 0m;  East -200m;  Height 200m"
+                      timestamp: "2026-06-29T11:46:15.000Z"
+                    - action: Update
+                      channel: GPS L1 C/A - Simulation
+                      info: "DUT LLA shifted:  North 0m;  East -200m;  Height 200m"
+                      timestamp: "2026-06-29T11:46:15.000Z"
+        "401":
+          $ref: "#/components/responses/MissingApiKey"
+        "403":
+          $ref: "#/components/responses/InvalidApiKey"
+        "404":
+          $ref: "#/components/responses/EndpointNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: GP-Simulator-2-API-Key
+      description: |
+        API key from the GP-Simulator-2 **API** settings screen.
+
+        Required only when **API key** authorization is selected in the application.
+        When **No Auth** is selected, requests work without this header.
+
+        Click **GENERATE** on the API settings page to create a new key, then **APPLY**.
+
+  parameters:
+    SdrAlias:
+      name: sdr_alias
+      in: path
+      required: true
+      description: |
+        SDR channel alias returned in the `genAlias` field by the list endpoint.
+
+        Common channel aliases:
+        - `GPS L1 C-A - Spoofing`
+        - `GPS L1 C-A - Simulation`
+      schema:
+        type: string
+      examples:
+        spoofing:
+          summary: Spoofing channel
+          value: GPS L1 C-A - Spoofing
+        simulation:
+          summary: Simulation channel
+          value: GPS L1 C-A - Simulation
+
+  responses:
+    MissingApiKey:
+      description: |
+        API key authorization is enabled, but the request did not include the
+        `GP-Simulator-2-API-Key` header.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missingApiKey:
+              summary: Missing API key
+              value:
+                status: Error
+                message: Missing GP-Simulator-2-API-Key
+    InvalidApiKey:
+      description: |
+        API key authorization is enabled, but the provided API key is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            invalidApiKey:
+              summary: Invalid API key
+              value:
+                status: Error
+                message: Invalid GP-Simulator-2-API-Key
+    EndpointNotFound:
+      description: |
+        The requested API path does not exist.
+
+        This is different from an unknown `{sdr_alias}` on a channel endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            endpointNotFound:
+              summary: Unknown API path
+              value:
+                status: Error
+                message: Endpoint /gp-simulator-2/api/v1/sdr not found
+    SdrNotFound:
+      description: |
+        No SDR channel exists for the provided `{sdr_alias}`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: |
+        GP-Simulator-2 did not respond in time or returned an internal failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            timeout:
+              summary: Request timeout
+              value:
+                status: Error
+                message: No response data received within the timeout.
+
+  schemas:
+    Status:
+      type: string
+      description: |
+        API operation status: `ok` for success, `Error` for failures.
+      enum:
+        - ok
+        - Error
+      example: ok
+
+    Sdr:
+      type: object
+      description: |
+        SDR channel connection and generation state.
+
+        In `GET /sdrs`, each item includes `genAlias`. In channel details,
+        the same fields appear under `data.sdrInfo` without repeating `genAlias`.
+      additionalProperties: true
+      properties:
+        genAlias:
+          type: string
+          description: Human-readable SDR channel alias.
+          example: GPS L1 C-A - Spoofing
+        connection:
+          type: boolean
+          description: Whether the channel is connected and available.
+          example: true
+        genStatus:
+          type: boolean
+          description: Whether signal generation is currently running for the channel.
+          example: false
+        gpsLockStatus:
+          type: boolean
+          description: Whether the SDR channel currently has GPS lock.
+          example: false
+
+    LlaShiftRequest:
+      type: object
+      description: |
+        LLA position shift request for the Spoofing channel during active
+        signal generation.
+
+        UI field mapping:
+
+        - `offset_step` -> `Distance Step (m)`
+        - `offset_time` -> `Time Step`
+        - `direction` -> shift direction (`N`, `S`, `E`, `W`)
+
+        `Distance To Target` appears in the UI only after LLA manipulation starts.
+        It is approximately `offset_step * sqrt(2)` for all directions (for example
+        `100` -> `141 m`, `200` -> `283 m`).
+      required:
+        - offset_step
+        - offset_time
+        - direction
+      properties:
+        offset_step:
+          type: number
+          format: double
+          description: Distance step in meters (`Distance Step (m)` in the UI).
+          example: 100
+        offset_time:
+          type: number
+          format: double
+          description: Time step for the LLA maneuver (`Time Step` in the UI).
+          example: 30
+        direction:
+          type: string
+          description: |
+            Shift direction. Valid values: `N`, `S`, `E`, `W`.
+            Empty or invalid values return `400`.
+          enum:
+            - N
+            - S
+            - E
+            - W
+          example: W
+
+    ChannelSimulationSettings:
+      type: object
+      description: |
+        Full simulation and spoofing configuration for one GP-Simulator-2 channel.
+
+        All fields listed in `required` must be present in the request body.
+        Removing any field key returns `Missing required parameter: '<field_name>'`.
+
+        String fields `script_path`, `alm_path`, and `eph_path` accept empty
+        strings. Enum fields do not accept empty values.
+
+        When `alm&eph_mode` is `File`, provide `alm_path` and `eph_path` for
+        local almanac and ephemeris files.
+
+        **Channel-specific restrictions**
+
+        - **Spoofing** (`GPS L1 C-A - Spoofing`): both `Coherent Spoofing` and
+          `Non-Coherent Spoofing` are valid.
+        - **Simulation** (`GPS L1 C-A - Simulation`): only `Non-Coherent Spoofing`
+          is valid.
+      required:
+        - alm&eph_mode
+        - alm_path
+        - eph_path
+        - altitude
+        - latitude
+        - longitude
+        - power
+        - script_path
+        - simulation_mode
+        - spoofing type
+        - sync_source
+        - time_mode
+        - timestamp_ref
+      properties:
+        alm&eph_mode:
+          type: string
+          description: |
+            Almanac and ephemeris source mode.
+
+            Use `File` together with `alm_path` and `eph_path` to load local
+            almanac and ephemeris files from the computer. Paths are optional
+            in the API, but should be provided for File mode to work as intended.
+          enum:
+            - NASA/USCG
+            - File
+            - Synthetic
+          example: NASA/USCG
+        alm_path:
+          type: string
+          description: |
+            Local file path to the almanac file.
+
+            Used when `alm&eph_mode` is `File`. Empty values are accepted but
+            not applied.
+          example: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\176.al3'
+        eph_path:
+          type: string
+          description: |
+            Local file path to the ephemeris file.
+
+            Used when `alm&eph_mode` is `File`. Empty values are accepted but
+            not applied.
+          example: 'C:\Users\User\AppData\Local\GPSPATRON\GP-Simulator 2\GNSS\176.al3'
+        altitude:
+          type: number
+          format: double
+          description: |
+            Altitude for generated signal position.
+
+            Valid range: 0 to 30000. Values outside this range return `400`.
+          minimum: 0
+          maximum: 30000
+          example: 100
+        latitude:
+          type: number
+          format: double
+          description: |
+            Latitude coordinate for generated signal position.
+
+            Valid range: -90 to 90. Values outside this range return `400`.
+          minimum: -90
+          maximum: 90
+          example: 48.8566
+        longitude:
+          type: number
+          format: double
+          description: |
+            Longitude coordinate for generated signal position.
+
+            Valid range: -180 to 180. Values outside this range return `400`.
+          minimum: -180
+          maximum: 180
+          example: 2.3522
+        power:
+          type: number
+          format: double
+          description: |
+            Output power for the channel. The allowed range is dynamic and
+            matches the GP-Simulator-2 UI (typical range: -81 to -8).
+            Values outside the current UI range return `400`.
+          example: -31
+        script_path:
+          type: string
+          description: |
+            Script path or identifier. Empty string is accepted.
+          example: Test
+        simulation_mode:
+          type: string
+          description: Simulation movement mode.
+          enum:
+            - Point
+            - Trajectory
+          example: Point
+        spoofing type:
+          type: string
+          description: |
+            Spoofing mode used by the channel.
+
+            Valid values depend on the selected channel:
+
+            - Spoofing channel: `Coherent Spoofing`, `Non-Coherent Spoofing`
+            - Simulation channel: `Non-Coherent Spoofing` only
+
+            Sending `Coherent Spoofing` to the Simulation channel returns `400`.
+          enum:
+            - Coherent Spoofing
+            - Non-Coherent Spoofing
+          example: Non-Coherent Spoofing
+        sync_source:
+          type: string
+          description: Clock synchronization source.
+          enum:
+            - Internal
+            - GPSDO
+            - External PPS
+            - External 10 MHz
+          example: GPSDO
+        time_mode:
+          type: string
+          description: Time simulation mode.
+          enum:
+            - Current Time
+            - Past Time
+            - Future Time
+          example: Current Time
+        timestamp_ref:
+          type: string
+          description: Timestamp reference source.
+          enum:
+            - Local PC
+            - NTP Server
+            - GPSDO
+          example: Local PC
+
+    LogEntry:
+      type: object
+      description: Single generation log entry.
+      additionalProperties: true
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Log entry timestamp as returned by GP-Simulator-2.
+          example: "2026-06-29T11:44:14.000Z"
+        channel:
+          type: string
+          description: SDR channel associated with the log entry.
+          example: GPS L1 C/A - Simulation
+        action:
+          type: string
+          description: |
+            Action recorded in the log: `Start Generation`, `Stop Generation`,
+            or `Update`.
+          example: Start Generation
+        info:
+          type: string
+          description: |
+            Additional human-readable log message. Empty string for some
+            `Stop Generation` entries. For `Start Generation`, contains a
+            multi-line dump of simulation settings.
+          example: "DUT LLA shifted:  North 0m;  East -200m;  Height 200m"
+
+    MessageResponse:
+      type: object
+      description: Standard successful command response.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          $ref: "#/components/schemas/Status"
+        message:
+          type: string
+          example: Start signal generation for 'GPS L1 C/A - Spoofing'
+
+    ErrorResponse:
+      type: object
+      description: Standard error response.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          $ref: "#/components/schemas/Status"
+        message:
+          type: string
+          description: Human-readable error message.
+          example: Invalid parameter value
+
+    SdrListResponse:
+      type: object
+      description: Response containing all SDR channels.
+      required:
+        - status
+        - data
+      properties:
+        status:
+          $ref: "#/components/schemas/Status"
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sdr"
+
+    SdrInfoResponse:
+      type: object
+      description: Response containing one SDR channel and its current settings.
+      additionalProperties: true
+      required:
+        - status
+        - data
+      properties:
+        status:
+          $ref: "#/components/schemas/Status"
+        data:
+          type: object
+          additionalProperties: true
+          properties:
+            genAlias:
+              type: string
+              description: SDR channel alias.
+              example: GPS L1 C/A - Spoofing
+            sdrInfo:
+              $ref: "#/components/schemas/Sdr"
+            settings:
+              $ref: "#/components/schemas/SdrDetailSettings"
+
+    SettingsResponse:
+      type: object
+      description: Response containing current settings for one SDR channel.
+      required:
+        - status
+        - data
+      properties:
+        status:
+          $ref: "#/components/schemas/Status"
+        data:
+          $ref: "#/components/schemas/ChannelSimulationSettings"
+
+    SdrDetailSettings:
+      type: object
+      description: |
+        Current runtime state for one SDR channel, returned by
+        `GET /gp-simulator-2/api/v1/sdrs/{sdr_alias}`.
+
+        This is not the same object as channel simulation settings from
+        `GET /gp-simulator-2/api/v1/sdrs/{sdr_alias}/settings`.
+      additionalProperties: true
+      properties:
+        curr_acceleration:
+          type: number
+          format: double
+          description: Current acceleration.
+          example: 0
+        curr_altitude:
+          type: number
+          format: double
+          description: Current altitude.
+          example: 0
+        curr_gps_week:
+          type: integer
+          description: Current GPS week number.
+          example: 2425
+        curr_latitude:
+          type: number
+          format: double
+          description: Current latitude.
+          example: 0
+        curr_longitude:
+          type: number
+          format: double
+          description: Current longitude.
+          example: 1
+        curr_speed:
+          type: number
+          format: double
+          description: Current speed.
+          example: 0
+        curr_time_of_week:
+          type: number
+          format: double
+          description: Current GPS time of week.
+          example: 129849
+
+    GenerationLogResponse:
+      type: array
+      description: List of generation log entries.
+      items:
+        $ref: "#/components/schemas/LogEntry"
